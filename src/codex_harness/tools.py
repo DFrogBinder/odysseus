@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -235,21 +236,29 @@ class HarnessToolExecutor:
             except ValueError:
                 argv = []
             if argv:
+                argv = _normalize_readonly_argv_for_platform(argv)
                 return subprocess.run(
                     argv,
                     cwd=str(self.workspace.root),
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=timeout,
                 )
+        shell_kwargs = {}
+        if os.name != "nt":
+            shell_kwargs["executable"] = "/bin/sh"
         return subprocess.run(
             command,
             shell=True,
-            executable="/bin/sh",
             cwd=str(self.workspace.root),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
+            **shell_kwargs,
         )
 
     def _collect_files(self, query: str) -> list[str]:
@@ -290,6 +299,8 @@ class HarnessToolExecutor:
                 cwd=str(self.workspace.root),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=min(self.default_timeout, 2),
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -338,6 +349,21 @@ def _is_readonly_shell_command(command: str) -> bool:
     if exe == "find" and "-delete" in argv[1:]:
         return False
     return True
+
+
+def _normalize_readonly_argv_for_platform(argv: list[str]) -> list[str]:
+    if os.name != "nt" or not argv:
+        return argv
+    exe = Path(argv[0]).name.lower()
+    if exe == "ls":
+        # Common POSIX listing requests from models should work on Windows.
+        dir_args = ["cmd", "/c", "dir"]
+        if any(arg.startswith("-") and "a" in arg for arg in argv[1:]):
+            dir_args.append("/a")
+        return dir_args
+    if exe == "pwd":
+        return ["cmd", "/c", "cd"]
+    return argv
 
 
 def _truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:

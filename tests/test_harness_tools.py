@@ -1,4 +1,6 @@
 import asyncio
+import subprocess
+from types import SimpleNamespace
 
 from src.codex_harness.approvals import StaticApprovalPolicy
 from src.codex_harness.tools import HarnessToolExecutor
@@ -68,6 +70,42 @@ def test_safe_shell_exec_runs_without_approval(tmp_path):
         assert "a.txt" in result.output
 
     asyncio.run(run())
+
+
+def test_rg_listing_uses_utf8_replacement_decoding(tmp_path, monkeypatch):
+    executor = HarnessToolExecutor(Workspace.from_path(tmp_path), StaticApprovalPolicy("deny"))
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout="bad\ufffdname.txt\n", stderr="")
+
+    monkeypatch.setattr("src.codex_harness.tools.shutil.which", lambda name: "rg.exe")
+    monkeypatch.setattr("src.codex_harness.tools.subprocess.run", fake_run)
+
+    assert executor._rg_candidates("") == ["bad\ufffdname.txt"]
+    assert calls[0]["encoding"] == "utf-8"
+    assert calls[0]["errors"] == "replace"
+
+
+def test_windows_ls_la_maps_to_cmd_dir(tmp_path, monkeypatch):
+    executor = HarnessToolExecutor(Workspace.from_path(tmp_path), StaticApprovalPolicy("deny"))
+    monkeypatch.setattr("src.codex_harness.tools.os.name", "nt")
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(argv, 0, stdout="a.txt\n", stderr="")
+
+    monkeypatch.setattr("src.codex_harness.tools.subprocess.run", fake_run)
+
+    result = executor._run_command_sync("ls -la", timeout=5)
+
+    assert result.returncode == 0
+    assert captured["argv"] == ["cmd", "/c", "dir", "/a"]
+    assert captured["kwargs"]["encoding"] == "utf-8"
+    assert captured["kwargs"]["errors"] == "replace"
 
 
 def test_destructive_shell_exec_requires_approval(tmp_path):
