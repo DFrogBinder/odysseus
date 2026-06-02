@@ -119,6 +119,7 @@ _TIMEOUT_EXEMPT_PREFIXES = (
     "/api/chat",            # streaming
     "/api/shell/stream",    # SSE
     "/api/research",        # multi-minute jobs
+    "/api/harness/run",     # agent harness SSE
     "/api/model/download",  # tmux setup may run pip installs
     "/api/model/probe",     # SSE; iterates models with up to 8s timeout each
     "/api/model-endpoints", # /probe sub-route also iterates models
@@ -628,6 +629,10 @@ app.include_router(setup_calendar_routes())
 # Shell (user-facing command execution)
 from routes.shell_routes import setup_shell_routes
 app.include_router(setup_shell_routes())
+
+# Minimal Codex-like harness
+from routes.harness_routes import setup_harness_routes
+app.include_router(setup_harness_routes())
 
 # Cookbook (model download/serve/cache, cookbook state sync)
 from routes.cookbook_routes import setup_cookbook_routes

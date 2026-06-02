@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""odysseus-harness - run the minimal Codex-like agent harness.
+
+    odysseus harness run --workspace . --endpoint http://localhost:1234/v1/chat/completions --model local "read README.md"
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.codex_harness.approvals import CLIApprovalPolicy
+from src.codex_harness.runner import HarnessRunner
+from src.codex_harness.types import HarnessRequest
+from src.codex_harness.workspace import WorkspaceError
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="odysseus-harness")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    run = sub.add_parser("run")
+    run.add_argument("--workspace", required=True)
+    run.add_argument("--endpoint", required=True, dest="endpoint_url")
+    run.add_argument("--model", required=True)
+    run.add_argument("--api-key-env", default="OPENAI_API_KEY")
+    run.add_argument("--image", action="append", default=[])
+    run.add_argument("--approval", choices=["ask", "always", "never"], default="ask")
+    run.add_argument("--max-rounds", type=int, default=12)
+    run.add_argument("--max-tool-calls", type=int, default=30)
+    run.add_argument("--timeout", type=int, default=60)
+    run.add_argument("prompt")
+    run.set_defaults(func=cmd_run)
+    return parser
+
+
+def _headers_from_args(args) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    key = os.environ.get(args.api_key_env or "")
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
+async def _run_async(args) -> int:
+    request = HarnessRequest(
+        prompt=args.prompt,
+        workspace=args.workspace,
+        endpoint_url=args.endpoint_url,
+        model=args.model,
+        headers=_headers_from_args(args),
+        images=args.image or [],
+        approval_policy=args.approval,
+        max_rounds=args.max_rounds,
+        max_tool_calls=args.max_tool_calls,
+        timeout=args.timeout,
+    )
+    runner = HarnessRunner(request, approval_policy=CLIApprovalPolicy(args.approval))
+    wrote_text = False
+    async for event in runner.run():
+        if event.event == "message_delta":
+            sys.stdout.write(str(event.data.get("text") or ""))
+            sys.stdout.flush()
+            wrote_text = True
+        elif event.event == "tool_call":
+            tc = event.data.get("tool_call") or {}
+            sys.stdout.write(f"\n[tool_call] {tc.get('name')} {tc.get('arguments')}\n")
+        elif event.event == "approval_required":
+            sys.stdout.write(f"\n[approval_required] {event.data.get('reason')}\n")
+        elif event.event == "tool_result":
+            result = event.data.get("result") or {}
+            status = "ok" if result.get("ok") else "error"
+            body = result.get("output") if result.get("ok") else result.get("error")
+            sys.stdout.write(f"[tool_result:{status}] {body}\n")
+        elif event.event == "final":
+            if not wrote_text:
+                sys.stdout.write(str(event.data.get("text") or ""))
+            if not str(event.data.get("text") or "").endswith("\n"):
+                sys.stdout.write("\n")
+        elif event.event == "error":
+            sys.stderr.write(f"error: {event.data.get('error')}\n")
+            return 1
+    return 0
+
+
+def cmd_run(args) -> int:
+    try:
+        return asyncio.run(_run_async(args))
+    except WorkspaceError as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 1
+    except ValueError as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return int(args.func(args) or 0)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
